@@ -114,12 +114,18 @@
   #boardWrap{ position:relative; }
   canvas{ background:var(--floor); border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,0.55); display:block; max-width:100%; }
 
-  #speechBubble{
+  .speechBubble{
     position:absolute; background:#fff; color:#111; padding:8px 12px; border-radius:10px;
     font-size:0.78rem; max-width:210px; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,0.4);
     opacity:0; transition:opacity 0.2s ease, transform 0.2s ease; pointer-events:none; transform: translateY(6px);
+    z-index:5;
   }
-  #speechBubble.show{ opacity:1; transform: translateY(0); }
+  .speechBubble.show{ opacity:1; transform: translateY(0); }
+
+  #taskHint{
+    color:var(--text); font-size:0.85rem; text-align:center; background:var(--panel2);
+    padding:8px 16px; border-radius:10px; border:1px solid #2d3242; max-width:520px;
+  }
 
   #countdownOverlay{
     position:absolute; inset:0; background:rgba(10,12,16,0.9);
@@ -177,12 +183,12 @@
     <div class="stat">Kód: <b id="hudCode"></b></div>
     <div id="scoreboard"></div>
   </div>
+  <div id="taskHint"></div>
   <div id="boardWrap">
     <canvas id="board"></canvas>
-    <div id="speechBubble"></div>
     <div id="countdownOverlay">
       <div style="color:var(--text);">Hra začíná za</div>
-      <div id="countdownNum">3</div>
+      <div id="countdownNum">5</div>
     </div>
   </div>
   <div id="controlsHint">Ovládání: šipky nebo W A S D</div>
@@ -222,6 +228,7 @@ const CHARACTERS = [
     id: 'david', name: 'David',
     img: 'assets/david.png',
     itemEmoji: '📄', itemName: 'certifikace',
+    taskText: 'Pohybuj se šipkami nebo WASD po bludišti a sbírej certifikáty 📄.',
     lines: [
       "joo ty vole, další certifikace, hmmm",
       "další papír do sbírky, jasně že jo",
@@ -235,6 +242,7 @@ const CHARACTERS = [
     id: 'nikolas', name: 'Nikolas',
     img: 'assets/nikolas.png',
     itemEmoji: '🎲', itemName: 'dvacetistěnných kostek',
+    taskText: 'Pohybuj se šipkami nebo WASD po bludišti a sbírej dvacetistěnné kostky 🎲.',
     lines: [
       "joo kurva, další kostka do sbírky",
       "kostek není nikdy dost",
@@ -248,6 +256,7 @@ const CHARACTERS = [
     id: 'mirek', name: 'Mirek',
     img: 'assets/mirek.png',
     itemEmoji: '🧀', itemName: 'smažených sýrů',
+    taskText: 'Pohybuj se šipkami nebo WASD po bludišti a sbírej smažené sýry 🧀.',
     lines: [
       "joo, smažáček, lahůdka",
       "další smažák, to se povedlo",
@@ -564,13 +573,14 @@ function renderLobby(){
     cont.appendChild(row);
   });
 
-  const allFilled = META.slots.every(s => s.name !== null);
-  const allChars = META.slots.every(s => s.charId !== null);
-  const allReady = META.slots.every(s => s.ready === true);
+  const filled = META.slots.filter(s => s.name !== null);
+  const enoughPlayers = filled.length >= 2;
+  const allChars = filled.every(s => s.charId !== null);
+  const allReady = filled.every(s => s.ready === true);
   const startBtn = document.getElementById('startBtn');
   if(IS_HOST){
     startBtn.style.display = 'inline-block';
-    startBtn.disabled = !(allFilled && allChars && allReady);
+    startBtn.disabled = !(enoughPlayers && allChars && allReady);
   } else {
     startBtn.style.display = 'none';
   }
@@ -612,12 +622,13 @@ document.getElementById('startBtn').addEventListener('click', async () => {
       const snap = await tx.get(docRef);
       if(!snap.exists) throw new Error('gone');
       const data = normalizeMeta(snap.data());
-      const allFilled = data.slots.every(s => s.name !== null);
-      const allChars = data.slots.every(s => s.charId !== null);
-      const allReady = data.slots.every(s => s.ready === true);
-      if(!(allFilled && allChars && allReady)) throw new Error('notready');
+      const filled = data.slots.filter(s => s.name !== null);
+      const enoughPlayers = filled.length >= 2;
+      const allChars = filled.every(s => s.charId !== null);
+      const allReady = filled.every(s => s.ready === true);
+      if(!(enoughPlayers && allChars && allReady)) throw new Error('notready');
       data.status = 'playing';
-      data.startAt = Date.now() + 3000;
+      data.startAt = Date.now() + 5000;
       data.winnerSlot = null;
       tx.set(docRef, data);
     });
@@ -645,22 +656,32 @@ async function beginGame(){
   myPos = pos;
   player.r = pos.r; player.c = pos.c;
   opponentsPos = {};
+  lastShownTs = {};
   buildScoreboard();
+  document.getElementById('taskHint').textContent = myChar().taskText;
   attachPosListeners();
   handleCountdown();
   drawGame();
 }
 
+let lastShownTs = {};
 function attachPosListeners(){
   Object.values(posUnsubs).forEach(unsub => unsub());
   posUnsubs = {};
   META.slots.forEach((slot, s) => {
     if(s === MY_SLOT || !slot.name) return;
+    let first = true;
     const unsub = posRef(LOBBY_CODE, s).onSnapshot(snap => {
       if(!snap.exists) return;
-      opponentsPos[s] = snap.data();
+      const data = snap.data();
+      opponentsPos[s] = data;
       const el = document.getElementById('scoreVal-' + s);
-      if(el) el.textContent = opponentsPos[s].collected;
+      if(el) el.textContent = data.collected;
+      if(!first && data.ts && data.ts !== lastShownTs[s] && data.lastLine){
+        showSpeechBubble(s, data.lastLine, data.r, data.c);
+      }
+      lastShownTs[s] = data.ts;
+      first = false;
       drawGame();
     });
     posUnsubs[s] = unsub;
@@ -792,7 +813,8 @@ function checkPickup(){
     const ch = myChar();
     const line = ch.lines[Math.floor(Math.random() * ch.lines.length)];
     myPos.lastLine = line;
-    showSpeech(line);
+    myPos.ts = Date.now();
+    showSpeechBubble(MY_SLOT, line, player.r, player.c);
     const scoreVal = document.getElementById('scoreVal-' + MY_SLOT);
     if(scoreVal) scoreVal.textContent = myPos.collected;
     if(myPos.collected >= TOTAL_ITEMS){
@@ -804,11 +826,17 @@ function checkPickup(){
   }
 }
 
-function showSpeech(text){
-  const bubble = document.getElementById('speechBubble');
+function showSpeechBubble(slot, text, r, c){
+  let bubble = document.getElementById('bubble-' + slot);
+  if(!bubble){
+    bubble = document.createElement('div');
+    bubble.id = 'bubble-' + slot;
+    bubble.className = 'speechBubble';
+    document.getElementById('boardWrap').appendChild(bubble);
+  }
   bubble.textContent = text;
-  const px = player.c * CELL;
-  const py = player.r * CELL;
+  const px = c * CELL;
+  const py = r * CELL;
   bubble.style.left = Math.min(px, canvas.width - 220) + 'px';
   bubble.style.top = Math.max(py - 44, 0) + 'px';
   bubble.classList.add('show');
